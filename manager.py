@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-import os, json, signal, subprocess, threading, time
+import os
+import json
+import subprocess
 
-DB_FILE="tunnels.json"
-PID_FILE="pids.json"
-BACKHAUL_BIN="./backhaul"
+DB_FILE = "tunnels.json"
+BACKHAUL_BIN = "/opt/Backhaul-manager/backhaul"
+SYSTEMD_DIR = "/etc/systemd/system"
 
-SERVER_TEMPLATE="""[server]
+SERVER_TEMPLATE = """[server]
 bind_addr = "0.0.0.0:{port}"
 transport = "tcpmux"
 token = "{token}"
@@ -22,7 +24,7 @@ log_level = "info"
 ports = [{ports}]
 """
 
-CLIENT_TEMPLATE="""[client]
+CLIENT_TEMPLATE = """[client]
 remote_addr = "{ip}:{port}"
 transport = "tcpmux"
 token = "{token}"
@@ -39,143 +41,252 @@ mux_streambuffer = 65536
 log_level = "info"
 """
 
-def loadj(f,d):
+
+# ---------------- STORAGE ----------------
+
+def load():
     try:
-        return json.load(open(f))
+        return json.load(open(DB_FILE))
     except:
-        return d
+        return []
 
-def savej(f,d):
-    json.dump(d,open(f,"w"),indent=2)
+def save(data):
+    json.dump(data, open(DB_FILE, "w"), indent=2)
 
-def tunnels(): return loadj(DB_FILE,[])
-def pids(): return loadj(PID_FILE,{})
 
-def save_pids(x): savej(PID_FILE,x)
+# ---------------- SYSTEMD ----------------
 
-def alive(pid):
-    try:
-        os.kill(int(pid),0)
-        return True
-    except:
-        return False
+def service_name(cfg):
+    return "backhaul-" + cfg.replace(".toml", "")
 
-def start_cfg(cfg):
-    pd=pids()
-    if cfg in pd and alive(pd[cfg]): return
-    log=open(cfg+".log","a")
-    p=subprocess.Popen([BACKHAUL_BIN,"-c",cfg],stdout=log,stderr=log,start_new_session=True)
-    pd[cfg]=p.pid
-    save_pids(pd)
+def service_file(name):
+    return f"{SYSTEMD_DIR}/{name}.service"
 
-def stop_cfg(cfg):
-    pd=pids()
-    if cfg in pd:
-        try: os.kill(int(pd[cfg]),signal.SIGTERM)
-        except: pass
-        pd.pop(cfg,None)
-        save_pids(pd)
 
-def watchdog():
-    while True:
-        for t in tunnels():
-            cfg=t["config"]
-            if t.get("autostart",False):
-                pd=pids()
-                if cfg not in pd or not alive(pd[cfg]):
-                    start_cfg(cfg)
-        time.sleep(30)
+def create_service(cfg):
+    name = service_name(cfg)
+
+    path = os.path.abspath(cfg)
+    binpath = os.path.abspath(BACKHAUL_BIN)
+
+    content = f"""[Unit]
+Description=Backhaul {name}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={os.getcwd()}
+ExecStart={binpath} -c {path}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+    fpath = service_file(name)
+    open(fpath, "w").write(content)
+
+    os.system("systemctl daemon-reload")
+    os.system(f"systemctl enable {name}")
+
+
+def delete_service(cfg):
+    name = service_name(cfg)
+
+    os.system(f"systemctl stop {name}")
+    os.system(f"systemctl disable {name}")
+
+    fpath = service_file(name)
+    if os.path.exists(fpath):
+        os.remove(fpath)
+
+    os.system("systemctl daemon-reload")
+
+
+# ---------------- CORE ----------------
 
 def add():
-    ts=tunnels()
-    m=input("Server(s) / Client(c): ").strip().lower()
-    port=input("Tunnel Port: ").strip()
-    token=input("Token: ").strip()
-    if not token: return
-    if m in ("s","server","1"):
-        ports=input("Ports: ").strip()
-        plist=",".join([f'"{x.strip()}"' for x in ports.split(",")])
-        cfg=f"s-{port}.toml"
-        open(cfg,"w").write(SERVER_TEMPLATE.format(port=port,token=token,ports=plist))
-        ts.append({"type":"server","port":port,"token":token,"config":cfg,"autostart":True})
+    data = load()
+
+    mode = input("Server(s) / Client(c): ").strip().lower()
+    port = input("Tunnel Port: ").strip()
+    token = input("Token: ").strip()
+
+    if not token:
+        print("Token required")
+        return
+
+    if mode in ["s", "server", "1"]:
+        ports = input("Ports (example: 45093,45094=45093): ").strip()
+        plist = ",".join([f'"{x.strip()}"' for x in ports.split(",")])
+
+        cfg = f"s-{port}.toml"
+        open(cfg, "w").write(SERVER_TEMPLATE.format(
+            port=port, token=token, ports=plist
+        ))
+
+        entry = {
+            "type": "server",
+            "port": port,
+            "token": token,
+            "config": cfg
+        }
+
     else:
-        ip=input("Server IP: ").strip()
-        cfg=f"c-{port}.toml"
-        open(cfg,"w").write(CLIENT_TEMPLATE.format(ip=ip,port=port,token=token))
-        ts.append({"type":"client","port":port,"token":token,"server_ip":ip,"config":cfg,"autostart":True})
-    savej(DB_FILE,ts)
-    if input("Start now? y/n: ").lower()=="y":
-        start_cfg(cfg)
+        ip = input("Server IP: ").strip()
+
+        cfg = f"c-{port}.toml"
+        open(cfg, "w").write(CLIENT_TEMPLATE.format(
+            ip=ip, port=port, token=token
+        ))
+
+        entry = {
+            "type": "client",
+            "port": port,
+            "token": token,
+            "server_ip": ip,
+            "config": cfg
+        }
+
+    data.append(entry)
+    save(data)
+
+    # systemd service
+    create_service(cfg)
+
+    if input("Start now? (y/n): ").lower() == "y":
+        os.system(f"systemctl start {service_name(cfg)}")
+
 
 def listt():
-    for i,t in enumerate(tunnels(),1):
-        print(i,t["config"],t["type"],"port",t["port"])
+    for i, t in enumerate(load(), 1):
+        print(f"{i}. {t['config']} | {t['type']} | {t['port']}")
+
 
 def delete():
-    ts=tunnels()
+    data = load()
     listt()
-    try:i=int(input("Select: "))-1
-    except:return
-    if not(0<=i<len(ts)): return
-    cfg=ts[i]["config"]
-    stop_cfg(cfg)
-    for f in [cfg,cfg+".log"]:
-        if os.path.exists(f): os.remove(f)
-    ts.pop(i)
-    savej(DB_FILE,ts)
+
+    try:
+        i = int(input("Select: ")) - 1
+    except:
+        return
+
+    if i < 0 or i >= len(data):
+        return
+
+    cfg = data[i]["config"]
+
+    delete_service(cfg)
+
+    if os.path.exists(cfg):
+        os.remove(cfg)
+
+    data.pop(i)
+    save(data)
+
 
 def start_one():
-    listt(); i=int(input("Select: "))-1
-    start_cfg(tunnels()[i]["config"])
+    listt()
+    i = int(input("Select: ")) - 1
+    cfg = load()[i]["config"]
+    os.system(f"systemctl start {service_name(cfg)}")
+
 
 def stop_one():
-    listt(); i=int(input("Select: "))-1
-    stop_cfg(tunnels()[i]["config"])
+    listt()
+    i = int(input("Select: ")) - 1
+    cfg = load()[i]["config"]
+    os.system(f"systemctl stop {service_name(cfg)}")
 
-def logs():
-    listt(); i=int(input("Select: "))-1
-    cfg=tunnels()[i]["config"]
-    os.system(f"tail -n 50 {cfg}.log")
+
+def restart_one():
+    listt()
+    i = int(input("Select: ")) - 1
+    cfg = load()[i]["config"]
+    name = service_name(cfg)
+    os.system(f"systemctl restart {name}")
+
 
 def status():
-    pd=pids()
-    for t in tunnels():
-        cfg=t["config"]
-        st="Running" if cfg in pd and alive(pd[cfg]) else "Stopped"
-        print(f"{cfg:20} {st}")
+    for t in load():
+        name = service_name(t["config"])
+        out = os.system(f"systemctl is-active --quiet {name}")
+        st = "Running" if out == 0 else "Stopped"
+        print(f"{t['config']:20} {st}")
 
-threading.Thread(target=watchdog,daemon=True).start()
+
+def logs():
+    listt()
+    i = int(input("Select: ")) - 1
+    cfg = load()[i]["config"]
+    name = service_name(cfg)
+    os.system(f"journalctl -u {name} -f")
+
+
+def all_start():
+    for t in load():
+        os.system(f"systemctl start {service_name(t['config'])}")
+
+
+def all_stop():
+    for t in load():
+        os.system(f"systemctl stop {service_name(t['config'])}")
+
+
+def all_restart():
+    all_stop()
+    all_start()
+
+
+# ---------------- MENU ----------------
 
 while True:
     os.system("clear")
     print("""
+BACKHAUL MANAGER (SYSTEMD)
+
 1 Add Tunnel
 2 Delete Tunnel
 3 List Tunnels
 4 Start Tunnel
 5 Stop Tunnel
-6 Start All
-7 Stop All
-8 Restart All
-9 Status
-10 View Logs
-11 Exit
+6 Restart Tunnel
+7 Start All
+8 Stop All
+9 Restart All
+10 Status
+11 Logs
+12 Exit
 """)
-    c=input("Select: ")
-    if c=="1": add()
-    elif c=="2": delete()
-    elif c=="3": listt()
-    elif c=="4": start_one()
-    elif c=="5": stop_one()
-    elif c=="6":
-        [start_cfg(t["config"]) for t in tunnels()]
-    elif c=="7":
-        [stop_cfg(t["config"]) for t in tunnels()]
-    elif c=="8":
-        [stop_cfg(t["config"]) for t in tunnels()]
-        time.sleep(1)
-        [start_cfg(t["config"]) for t in tunnels()]
-    elif c=="9": status()
-    elif c=="10": logs()
-    elif c=="11": break
-    input("\\nEnter...")
+
+    c = input("Select: ")
+
+    if c == "1":
+        add()
+    elif c == "2":
+        delete()
+    elif c == "3":
+        listt()
+    elif c == "4":
+        start_one()
+    elif c == "5":
+        stop_one()
+    elif c == "6":
+        restart_one()
+    elif c == "7":
+        all_start()
+    elif c == "8":
+        all_stop()
+    elif c == "9":
+        all_restart()
+    elif c == "10":
+        status()
+    elif c == "11":
+        logs()
+    elif c == "12":
+        break
+
+    input("\nEnter...")
