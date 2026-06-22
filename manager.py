@@ -149,7 +149,7 @@ def add():
         plist=",".join([f'"{x.strip()}"' for x in ports.split(",")])
         cfg=f"s-{port}.toml"
         open(cfg,"w").write(build_server_config(port,token,transport,plist,manual))
-        entry={"type":"server","transport":transport,"port":port,"token":token,"config":cfg}
+        entry={"type":"server","transport":transport,"port":port,"ports":ports,"token":token,"config":cfg}
     else:
         ip=input("Server IP: ").strip()
         cfg=f"c-{port}.toml"
@@ -281,51 +281,101 @@ def clone_tunnel():
 
 def reconfigure_tunnel():
     data = load()
+
+    if not data:
+        print("No tunnels found.")
+        return
+
     listt()
 
     try:
-        i = int(input("Select tunnel: ")) - 1
+        idx = int(input("Select tunnel: ")) - 1
     except:
         return
 
-    if i < 0 or i >= len(data):
+    if idx < 0 or idx >= len(data):
         return
 
-    t = data[i]
+    t = data[idx]
+
+    cfg = t["config"]
+
+    print("\nLeave empty to keep current value\n")
+
+    # Stop service
     try:
-        os.system(f"systemctl stop {service_name(t['config'])}")
+        os.system(f"systemctl stop {service_name(cfg)}")
     except:
-        return
+        pass
 
-    print("Leave empty to keep current value")
+    # Transport
+    print("\nTransport:")
+    print("1) tcp")
+    print("2) tcpmux")
+    print("3) udp")
+    print("4) ws")
+    print("5) wsmux")
 
-    transport = input(f'Transport [{t.get("transport","tcpmux")}]: ').strip() or t.get("transport","tcpmux")
-    token = input(f'Token [{t.get("token","")}]: ').strip() or t.get("token","")
+    transport_map = {
+        "1": "tcp",
+        "2": "tcpmux",
+        "3": "udp",
+        "4": "ws",
+        "5": "wsmux"
+    }
 
-    if t["type"] == "server":
-        ports = input("Ports (comma separated): ").strip()
+    current_transport = t.get("transport", "tcpmux")
 
-        plist = None
-        if ports:
-            plist = ",".join([f'"{x.strip()}"' for x in ports.split(",")])
+    transport_input = input(
+        f"Transport [{current_transport}]: "
+    ).strip()
 
-        cfg_txt = open(t["config"]).read()
-
-        if plist:
-            cfg_txt = build_server_config(
-                t["port"],
-                token,
-                transport,
-                plist,
-                False
-            )
-
-        open(t["config"],"w").write(cfg_txt)
-
+    if transport_input in transport_map:
+        transport = transport_map[transport_input]
+    elif transport_input:
+        transport = transport_input
     else:
-        ip = input(f'Server IP [{t.get("server_ip","")}]: ').strip() or t.get("server_ip","")
+        transport = current_transport
 
-        cfg_txt = build_client_config(
+    # Token
+    token = input(
+        f'Token [{t.get("token","")}]: '
+    ).strip() or t.get("token","")
+
+    # SERVER
+    if t["type"] == "server":
+
+        current_ports = t.get("ports", "")
+
+        ports = input(
+            f'Ports [{current_ports}]: '
+        ).strip() or current_ports
+
+        plist = ",".join(
+            [f'"{x.strip()}"' for x in ports.split(",") if x.strip()]
+        )
+
+        cfg_text = build_server_config(
+            t["port"],
+            token,
+            transport,
+            plist,
+            False
+        )
+
+        with open(cfg, "w") as f:
+            f.write(cfg_text)
+
+        t["ports"] = ports
+
+    # CLIENT
+    else:
+
+        ip = input(
+            f'Server IP [{t.get("server_ip","")}]: '
+        ).strip() or t.get("server_ip","")
+
+        cfg_text = build_client_config(
             ip,
             t["port"],
             token,
@@ -333,21 +383,25 @@ def reconfigure_tunnel():
             False
         )
 
-        open(t["config"],"w").write(cfg_txt)
+        with open(cfg, "w") as f:
+            f.write(cfg_text)
 
         t["server_ip"] = ip
 
+    # Update json
     t["transport"] = transport
     t["token"] = token
 
+    data[idx] = t
     save(data)
 
+    # Restart service
     try:
-        os.system(f"systemctl restart {service_name(t['config'])}")
+        os.system(f"systemctl restart {service_name(cfg)}")
     except:
         pass
 
-    print("Tunnel updated and restarted.")
+    print("\nTunnel updated successfully.")
 
 # ---------------- MENU ----------------
 
