@@ -364,7 +364,7 @@ BACKHAUL MANAGER (SYSTEMD)
 10 Status
 11 Logs
 12 Reconfigure Tunnel
-13 Clone Tunnel
+
 14 Exit
 """)
 
@@ -394,8 +394,8 @@ BACKHAUL MANAGER (SYSTEMD)
         logs()
     elif c == "12":
       reconfigure_tunnel()
-    elif c == "13":
-      clone_tunnel()
+    # elif c == "13":
+    #   clone_tunnel()
     elif c == "14":
         break
 
