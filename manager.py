@@ -293,7 +293,7 @@ def reconfigure_tunnel():
 
     t = data[i]
 
-    print("\\nLeave empty to keep current value\\n")
+    print("Leave empty to keep current value \n")
 
     transport = input(f'Transport [{t.get("transport","tcpmux")}]: ').strip() or t.get("transport","tcpmux")
     token = input(f'Token [{t.get("token","")}]: ').strip() or t.get("token","")
