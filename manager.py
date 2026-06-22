@@ -292,6 +292,10 @@ def reconfigure_tunnel():
         return
 
     t = data[i]
+    try:
+        os.system(f"systemctl stop {service_name(t['config'])}")
+    except:
+        return
 
     print("Leave empty to keep current value")
 
